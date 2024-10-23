@@ -2,7 +2,7 @@
 /*
 Plugin Name: Auto Tag Linker
 Description: Automatically links words in posts to their corresponding tag archives
-Version: 1.4
+Version: 1.42
 Author: Your Name
 */
 
@@ -28,19 +28,10 @@ class AutoTagLinker {
         return isset($options[$key]) ? $options[$key] : $default;
     }
 
-    public function process_content($content) {
+public function process_content($content) {
         global $post;
         
         if (!isset($post) || get_post_meta($post->ID, '_disable_auto_linking', true)) {
-            return $content;
-        }
-
-        $enabled_post_types = $this->get_option('enabled_post_types', array('post'));
-        if (!is_array($enabled_post_types)) {
-            $enabled_post_types = array('post');
-        }
-        
-        if (!in_array($post->post_type, $enabled_post_types)) {
             return $content;
         }
 
@@ -48,19 +39,27 @@ class AutoTagLinker {
             return $content;
         }
 
-        $parts = preg_split('/(<[^>]+>)/i', $content, -1, PREG_SPLIT_DELIM_CAPTURE);
+        // Dividir el contenido preservando los tags HTML completos
+        $parts = preg_split('/(<[^>]*>)/i', $content, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY);
         
-        // Procesar palabras personalizadas
-        if ($this->get_option('enable_custom_words', true)) {
-            $custom_words = $this->parse_custom_words($this->get_option('custom_words', ''));
-            $parts = $this->process_custom_words($parts, $custom_words);
-        }
+        foreach ($parts as $i => $part) {
+            // Si esta parte comienza con < es un tag HTML, lo saltamos
+            if (strpos($part, '<') === 0) {
+                continue;
+            }
+            
+            // Procesar palabras personalizadas
+            if ($this->get_option('enable_custom_words', true)) {
+                $custom_words = $this->parse_custom_words($this->get_option('custom_words', ''));
+                $parts[$i] = $this->process_custom_words($part, $custom_words);
+            }
 
-        // Procesar tags si están habilitados
-        if ($this->get_option('enable_tags', true)) {
-            $tags = get_tags(array('hide_empty' => false));
-            if (!empty($tags)) {
-                $parts = $this->process_tags($parts, $tags);
+            // Procesar tags si están habilitados
+            if ($this->get_option('enable_tags', true)) {
+                $tags = get_tags(array('hide_empty' => false));
+                if (!empty($tags)) {
+                    $parts[$i] = $this->process_tags($part, $tags);
+                }
             }
         }
 
@@ -87,81 +86,72 @@ class AutoTagLinker {
         return $words;
     }
 
-    private function process_custom_words($parts, $custom_words) {
+
+    private function process_custom_words($text, $custom_words) {
         $blacklist = array_map('trim', explode("\n", $this->get_option('blacklist', '')));
         $max_links = absint($this->get_option('max_links_per_tag', 1));
         $new_window = $this->get_option('open_new_window', false);
 
-        foreach ($parts as $i => $part) {
-            if ($i % 2 === 0) { // Solo procesar texto, no HTML
-                foreach ($custom_words as $word_data) {
-                    if (in_array(strtolower($word_data['word']), array_map('strtolower', $blacklist))) {
-                        continue;
-                    }
-
-                    $count = 0;
-                    $word = preg_quote($word_data['word'], '/');
-                    $pattern = '/\b(' . $word . ')\b(?![^<]*>|[^<>]*<\/)/i';
-                    
-                    $part = preg_replace_callback($pattern, function($matches) use ($word_data, $new_window, &$count, $max_links) {
-                        if ($count >= $max_links) {
-                            return $matches[0];
-                        }
-                        $count++;
-                        
-                        $url = !empty($word_data['url']) ? 
-                            $word_data['url'] : 
-                            home_url('/?s=' . urlencode($matches[0]));
-
-                        $target = $new_window ? ' target="_blank"' : '';
-                        return sprintf('<a href="%s"%s class="auto-tag-link">%s</a>', 
-                            esc_url($url),
-                            $target,
-                            esc_html($matches[0])
-                        );
-                    }, $part, $max_links);
-                }
-                $parts[$i] = $part;
+        foreach ($custom_words as $word_data) {
+            if (in_array(strtolower($word_data['word']), array_map('strtolower', $blacklist))) {
+                continue;
             }
+
+            $count = 0;
+            $word = preg_quote($word_data['word'], '/');
+            $pattern = '/\b(' . $word . ')\b/u';
+            
+            $text = preg_replace_callback($pattern, function($matches) use ($word_data, $new_window, &$count, $max_links) {
+                if ($count >= $max_links) {
+                    return $matches[0];
+                }
+                $count++;
+                
+                $url = !empty($word_data['url']) ? 
+                    $word_data['url'] : 
+                    home_url('/?s=' . urlencode($matches[1]));
+
+                $target = $new_window ? ' target="_blank"' : '';
+                return sprintf('<a href="%s"%s class="auto-tag-link">%s</a>', 
+                    esc_url($url),
+                    $target,
+                    esc_html($matches[1])
+                );
+            }, $text, $max_links);
         }
 
-        return $parts;
+        return $text;
     }
 
-    private function process_tags($parts, $tags) {
+    private function process_tags($text, $tags) {
         $blacklist = array_map('trim', explode("\n", $this->get_option('blacklist', '')));
         $max_links = absint($this->get_option('max_links_per_tag', 1));
         $new_window = $this->get_option('open_new_window', false);
 
-        foreach ($parts as $i => $part) {
-            if ($i % 2 === 0) {
-                foreach ($tags as $tag) {
-                    if (in_array(strtolower($tag->name), array_map('strtolower', $blacklist))) {
-                        continue;
-                    }
-
-                    $count = 0;
-                    $tag_name = preg_quote($tag->name, '/');
-                    $pattern = '/\b(' . $tag_name . ')\b(?![^<]*>|[^<>]*<\/)/i';
-                    
-                    $part = preg_replace_callback($pattern, function($matches) use ($tag, $new_window, &$count, $max_links) {
-                        if ($count >= $max_links) {
-                            return $matches[0];
-                        }
-                        $count++;
-                        $target = $new_window ? ' target="_blank"' : '';
-                        return sprintf('<a href="%s"%s class="auto-tag-link">%s</a>', 
-                            esc_url(get_tag_link($tag->term_id)),
-                            $target,
-                            esc_html($matches[0])
-                        );
-                    }, $part, $max_links);
-                }
-                $parts[$i] = $part;
+        foreach ($tags as $tag) {
+            if (in_array(strtolower($tag->name), array_map('strtolower', $blacklist))) {
+                continue;
             }
+
+            $count = 0;
+            $tag_name = preg_quote($tag->name, '/');
+            $pattern = '/\b(' . $tag_name . ')\b/u';
+            
+            $text = preg_replace_callback($pattern, function($matches) use ($tag, $new_window, &$count, $max_links) {
+                if ($count >= $max_links) {
+                    return $matches[0];
+                }
+                $count++;
+                $target = $new_window ? ' target="_blank"' : '';
+                return sprintf('<a href="%s"%s class="auto-tag-link">%s</a>', 
+                    esc_url(get_tag_link($tag->term_id)),
+                    $target,
+                    esc_html($matches[1])
+                );
+            }, $text, $max_links);
         }
 
-        return $parts;
+        return $text;
     }
 
     public function add_admin_menu() {
