@@ -2,8 +2,8 @@
 /*
 Plugin Name: Auto Tag Linker
 Description: Automatically links words in posts to their corresponding tag archives
-Version: 1.42
-Author: Your Name
+Version: 1.43
+Author: Eduardo Llaguno
 */
 
 if (!defined('ABSPATH')) {
@@ -42,23 +42,28 @@ public function process_content($content) {
         // Dividir el contenido preservando los tags HTML completos
         $parts = preg_split('/(<[^>]*>)/i', $content, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY);
         
+        // Array para llevar registro de palabras ya procesadas
+        $processed_words = array();
+        
         foreach ($parts as $i => $part) {
             // Si esta parte comienza con < es un tag HTML, lo saltamos
             if (strpos($part, '<') === 0) {
                 continue;
             }
             
-            // Procesar palabras personalizadas
+            // Primero procesamos palabras personalizadas
             if ($this->get_option('enable_custom_words', true)) {
                 $custom_words = $this->parse_custom_words($this->get_option('custom_words', ''));
-                $parts[$i] = $this->process_custom_words($part, $custom_words);
+                list($parts[$i], $words_processed) = $this->process_custom_words($part, $custom_words);
+                // Guardamos las palabras que ya fueron procesadas
+                $processed_words = array_merge($processed_words, $words_processed);
             }
 
-            // Procesar tags si están habilitados
+            // Luego procesamos tags, pero evitando las palabras ya procesadas
             if ($this->get_option('enable_tags', true)) {
                 $tags = get_tags(array('hide_empty' => false));
                 if (!empty($tags)) {
-                    $parts[$i] = $this->process_tags($part, $tags);
+                    $parts[$i] = $this->process_tags($parts[$i], $tags, $processed_words);
                 }
             }
         }
@@ -91,6 +96,7 @@ public function process_content($content) {
         $blacklist = array_map('trim', explode("\n", $this->get_option('blacklist', '')));
         $max_links = absint($this->get_option('max_links_per_tag', 1));
         $new_window = $this->get_option('open_new_window', false);
+        $processed_words = array();
 
         foreach ($custom_words as $word_data) {
             if (in_array(strtolower($word_data['word']), array_map('strtolower', $blacklist))) {
@@ -118,17 +124,26 @@ public function process_content($content) {
                     esc_html($matches[1])
                 );
             }, $text, $max_links);
+
+            if ($count > 0) {
+                $processed_words[] = strtolower($word_data['word']);
+            }
         }
 
-        return $text;
+        return array($text, $processed_words);
     }
 
-    private function process_tags($text, $tags) {
+    private function process_tags($text, $tags, $processed_words) {
         $blacklist = array_map('trim', explode("\n", $this->get_option('blacklist', '')));
         $max_links = absint($this->get_option('max_links_per_tag', 1));
         $new_window = $this->get_option('open_new_window', false);
 
         foreach ($tags as $tag) {
+            // Saltamos si la palabra ya fue procesada como palabra personalizada
+            if (in_array(strtolower($tag->name), $processed_words)) {
+                continue;
+            }
+
             if (in_array(strtolower($tag->name), array_map('strtolower', $blacklist))) {
                 continue;
             }
