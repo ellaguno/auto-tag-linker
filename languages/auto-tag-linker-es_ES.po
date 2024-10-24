@@ -1,0 +1,57 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: Auto Tag Linker 1.4\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2024-02-14 12:00+0000\n"
+"PO-Revision-Date: 2024-02-14 12:00+0000\n"
+"Language-Team: Spanish\n"
+"Language: es_ES\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "General Settings"
+msgstr "Configuración General"
+
+msgid "Maximum links per word/tag"
+msgstr "Máximo de enlaces por palabra/etiqueta"
+
+msgid "How many times the same word will be converted to a link"
+msgstr "Cuántas veces la misma palabra se convertirá en enlace"
+
+msgid "Open links in new window"
+msgstr "Abrir enlaces en nueva ventana"
+
+msgid "Open all auto-generated links in a new window/tab"
+msgstr "Abrir todos los enlaces auto-generados en una nueva ventana/pestaña"
+
+msgid "Link Sources"
+msgstr "Fuentes de Enlaces"
+
+msgid "Enable Links"
+msgstr "Habilitar Enlaces"
+
+msgid "Use WordPress internal tags"
+msgstr "Usar etiquetas internas de WordPress"
+
+msgid "Use custom word list"
+msgstr "Usar lista personalizada de palabras"
+
+msgid "Word List"
+msgstr "Lista de Palabras"
+
+msgid "Format: one word per line."
+msgstr "Formato: una palabra por línea."
+
+msgid "For custom URLs: word|URL"
+msgstr "Para URLs personalizados: palabra|URL"
+
+msgid "Without URL: word will link to internal search"
+msgstr "Sin URL: la palabra se vinculará a la búsqueda interna"
+
+msgid "Example:"
+msgstr "Ejemplo:"
+
+msgid "Disable auto-linking for this post"
+msgstr "Desactivar auto-linking para este post"
