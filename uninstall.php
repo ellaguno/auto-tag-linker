@@ -1,36 +1,47 @@
 <?php
-// Si WordPress no llamó este archivo, abortamos
+/**
+ * Uninstall script for Auto Tag Linker
+ *
+ * @package Auto_Tag_Linker
+ */
+
+// If uninstall not called from WordPress, exit
 if (!defined('WP_UNINSTALL_PLUGIN')) {
-    die;
+    exit;
 }
 
-// Eliminar todas las opciones del plugin
+// Delete plugin options
 delete_option('auto_tag_linker_settings');
 
-// Obtener todos los post types
-$post_types = get_post_types(array('public' => true), 'names');
+// Get all post types
+$post_types = get_post_types(array('public' => true));
 
-// Eliminar los meta datos de todos los posts
-global $wpdb;
-$wpdb->query(
-    $wpdb->prepare(
-        "DELETE FROM {$wpdb->postmeta} WHERE meta_key = %s",
-        '_disable_auto_linking'
-    )
-);
+// Process deletion in batches
+foreach ($post_types as $post_type) {
+    $batch_size = 100; // Process posts in smaller batches
+    $offset = 0;
+    
+    do {
+        $posts = get_posts(array(
+            'post_type'      => $post_type,
+            'posts_per_page' => $batch_size,
+            'offset'         => $offset,
+            'post_status'    => 'any',
+            'fields'         => 'ids',
+            'no_found_rows'  => true, // Optimización adicional
+            'orderby'        => 'ID', // Ordenamiento más eficiente
+            'order'          => 'ASC'
+        ));
 
-// Limpiar el caché de transients si existiera
-delete_transient('atl_custom_words_cache');
+        if (!empty($posts)) {
+            foreach ($posts as $post_id) {
+                delete_post_meta($post_id, '_disable_auto_linking');
+            }
+        }
 
-// Si hay tablas personalizadas (en este caso no hay), se eliminarían así:
-// $wpdb->query("DROP TABLE IF EXISTS {$wpdb->prefix}mi_tabla_personalizada");
+        $offset += $batch_size;
+    } while (!empty($posts));
+}
 
-// Opcionalmente, limpiar las opciones de usuario si las hubiera
-/*
-$wpdb->query(
-    $wpdb->prepare(
-        "DELETE FROM {$wpdb->usermeta} WHERE meta_key LIKE %s",
-        'atl_%'
-    )
-);
-*/
+// Clear any cached data
+wp_cache_flush();
