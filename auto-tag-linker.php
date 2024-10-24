@@ -1,9 +1,15 @@
 <?php
 /*
 Plugin Name: Auto Tag Linker
+Plugin URI: https://wordpress.org/plugins/auto-tag-linker/
 Description: Automatically links words in posts to their corresponding tag archives
 Version: 1.43
 Author: Eduardo Llaguno
+Author URI: https://yourwebsite.com
+License: GPL v2 or later
+License URI: https://www.gnu.org/licenses/gpl-2.0.html
+Text Domain: auto-tag-linker
+Domain Path: /languages
 */
 
 if (!defined('ABSPATH')) {
@@ -15,51 +21,124 @@ class AutoTagLinker {
     private $option_name = 'auto_tag_linker_settings';
 
     public function __construct() {
-        add_filter('the_content', array($this, 'process_content'));
-        add_action('admin_menu', array($this, 'add_admin_menu'));
-        add_action('admin_init', array($this, 'register_settings'));
-        add_action('add_meta_boxes', array($this, 'add_meta_box'));
-        add_action('save_post', array($this, 'save_meta_box_data'));
-        add_action('wp_head', array($this, 'add_custom_css'));
+        // Initialize the plugin
+        add_action('init', array($this, 'init'));
+        
+        // Admin hooks
+        if (is_admin()) {
+            add_action('admin_menu', array($this, 'add_admin_menu'));
+            add_action('admin_init', array($this, 'register_settings'));
+            add_action('add_meta_boxes', array($this, 'add_meta_box'));
+            add_action('save_post', array($this, 'save_meta_box_data'));
+        }
+
+        // Front-end hooks
+        if (!is_admin()) {
+            add_filter('the_content', array($this, 'process_content'));
+            add_action('wp_head', array($this, 'add_custom_css'));
+        }
+    }
+
+    public function init() {
+        load_plugin_textdomain(
+            'auto-tag-linker',
+            false,
+            dirname(plugin_basename(__FILE__)) . '/languages'
+        );
+    }
+
+    public function add_admin_menu() {
+        add_options_page(
+            'Auto Tag Linker Settings', // Page title
+            'Auto Tag Linker',          // Menu title
+            'manage_options',           // Capability
+            'auto-tag-linker',         // Menu slug
+            array($this, 'render_settings_page') // Callback function
+        );
+    }
+
+    public function register_settings() {
+        register_setting($this->options_group, $this->option_name);
+
+        // Add default options if they don't exist
+        if (false === get_option($this->option_name)) {
+            $defaults = array(
+                'max_links_per_tag' => 1,
+                'open_new_window' => false,
+                'enable_tags' => true,
+                'enable_custom_words' => true,
+                'enabled_post_types' => array('post'),
+                'custom_words' => '',
+                'blacklist' => '',
+                'custom_css' => '.auto-tag-link { text-decoration: none !important; color: inherit; } .auto-tag-link:hover { text-decoration: underline !important; }'
+            );
+            update_option($this->option_name, $defaults);
+        }
     }
 
     public function get_option($key, $default = '') {
-        $options = get_option($this->option_name, array());
+        $options = get_option($this->option_name);
         return isset($options[$key]) ? $options[$key] : $default;
     }
 
-public function process_content($content) {
+    public function process_content($content) {
+        // Check if we're in the main query and it's a single post
+        if (!is_main_query() || !is_singular()) {
+            return $content;
+        }
+
         global $post;
         
-        if (!isset($post) || get_post_meta($post->ID, '_disable_auto_linking', true)) {
+        // Check if auto-linking is disabled for this post
+        if (get_post_meta($post->ID, '_disable_auto_linking', true)) {
             return $content;
         }
 
-        if (is_feed() || is_archive()) {
+        // Get enabled post types
+        $enabled_types = $this->get_option('enabled_post_types', array('post'));
+        if (!in_array($post->post_type, $enabled_types)) {
             return $content;
         }
 
-        // Dividir el contenido preservando los tags HTML completos
+        // Process the content
+        return $this->process_text($content);
+    }
+
+    private function process_text($content) {
+        // Crear un array para almacenar temporalmente los enlaces existentes
+        $existing_links = array();
+        
+        // Guardar los enlaces existentes con un placeholder temporal
+        $content = preg_replace_callback('/<a\b[^>]*>(.*?)<\/a>/i', function($matches) use (&$existing_links) {
+            $placeholder = '%%EXISTING_LINK_' . count($existing_links) . '%%';
+            $existing_links[] = $matches[0];
+            return $placeholder;
+        }, $content);
+
+        // Ahora procesar el contenido normal
         $parts = preg_split('/(<[^>]*>)/i', $content, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY);
         
-        // Array para llevar registro de palabras ya procesadas
+        if (!is_array($parts)) {
+            // Restaurar los enlaces existentes antes de retornar
+            return $this->restore_existing_links($content, $existing_links);
+        }
+
         $processed_words = array();
         
         foreach ($parts as $i => $part) {
-            // Si esta parte comienza con < es un tag HTML, lo saltamos
+            // Skip HTML tags
             if (strpos($part, '<') === 0) {
                 continue;
             }
             
-            // Primero procesamos palabras personalizadas
+            // Process custom words first if enabled
             if ($this->get_option('enable_custom_words', true)) {
                 $custom_words = $this->parse_custom_words($this->get_option('custom_words', ''));
                 list($parts[$i], $words_processed) = $this->process_custom_words($part, $custom_words);
-                // Guardamos las palabras que ya fueron procesadas
                 $processed_words = array_merge($processed_words, $words_processed);
             }
 
-            // Luego procesamos tags, pero evitando las palabras ya procesadas
+            // Then process tags if enabled
             if ($this->get_option('enable_tags', true)) {
                 $tags = get_tags(array('hide_empty' => false));
                 if (!empty($tags)) {
@@ -68,9 +147,19 @@ public function process_content($content) {
             }
         }
 
-        return implode('', $parts);
+        $processed_content = implode('', $parts);
+        
+        // Restaurar los enlaces existentes
+        return $this->restore_existing_links($processed_content, $existing_links);
     }
 
+    private function restore_existing_links($content, $existing_links) {
+        foreach ($existing_links as $i => $link) {
+            $content = str_replace('%%EXISTING_LINK_' . $i . '%%', $link, $content);
+        }
+        return $content;
+    }
+    
     private function parse_custom_words($custom_words_text) {
         $words = array();
         $lines = explode("\n", $custom_words_text);
@@ -90,8 +179,7 @@ public function process_content($content) {
         
         return $words;
     }
-
-
+    
     private function process_custom_words($text, $custom_words) {
         $blacklist = array_map('trim', explode("\n", $this->get_option('blacklist', '')));
         $max_links = absint($this->get_option('max_links_per_tag', 1));
@@ -117,7 +205,7 @@ public function process_content($content) {
                     $word_data['url'] : 
                     home_url('/?s=' . urlencode($matches[1]));
 
-                $target = $new_window ? ' target="_blank"' : '';
+                $target = $new_window ? ' target="_blank" rel="noopener noreferrer"' : '';
                 return sprintf('<a href="%s"%s class="auto-tag-link">%s</a>', 
                     esc_url($url),
                     $target,
@@ -139,7 +227,6 @@ public function process_content($content) {
         $new_window = $this->get_option('open_new_window', false);
 
         foreach ($tags as $tag) {
-            // Saltamos si la palabra ya fue procesada como palabra personalizada
             if (in_array(strtolower($tag->name), $processed_words)) {
                 continue;
             }
@@ -157,7 +244,7 @@ public function process_content($content) {
                     return $matches[0];
                 }
                 $count++;
-                $target = $new_window ? ' target="_blank"' : '';
+                $target = $new_window ? ' target="_blank" rel="noopener noreferrer"' : '';
                 return sprintf('<a href="%s"%s class="auto-tag-link">%s</a>', 
                     esc_url(get_tag_link($tag->term_id)),
                     $target,
@@ -169,60 +256,152 @@ public function process_content($content) {
         return $text;
     }
 
-    public function add_admin_menu() {
-        add_options_page(
-            'Auto Tag Linker Settings',
-            'Auto Tag Linker',
-            'manage_options',
-            'auto-tag-linker',
-            array($this, 'render_settings_page')
-        );
+    public function add_custom_css() {
+        $custom_css = $this->get_option('custom_css', '');
+        if (!empty($custom_css)) {
+            echo "\n<!-- Auto Tag Linker Custom CSS -->\n";
+            echo "<style type='text/css'>\n" . wp_strip_all_tags($custom_css) . "\n</style>\n";
+        }
     }
 
-    public function register_settings() {
-        register_setting(
-            $this->options_group,
-            $this->option_name,
-            array(
-                'type' => 'array',
-                'sanitize_callback' => array($this, 'sanitize_options')
-            )
-        );
-    }
+public function render_settings_page() {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('You do not have sufficient permissions to access this page.'));
+        }
+        ?>
+        <div class="wrap">
+            <h1><?php echo esc_html(get_admin_page_title()); ?></h1>
+            
+            <form method="post" action="options.php">
+                <?php
+                settings_fields($this->options_group);
+                $options = get_option($this->option_name);
+                ?>
+                
+                <table class="form-table" role="presentation">
+                    <tr>
+                        <th colspan="2">
+                            <h2 class="title"><?php esc_html_e('General Settings', 'auto-tag-linker'); ?></h2>
+                        </th>
+                    </tr>
+                    
+                    <tr>
+                        <th scope="row">
+                            <label for="max_links_per_tag"><?php esc_html_e('Maximum links per word/tag', 'auto-tag-linker'); ?></label>
+                        </th>
+                        <td>
+                            <input type="number" id="max_links_per_tag" 
+                                   name="<?php echo esc_attr($this->option_name); ?>[max_links_per_tag]" 
+                                   value="<?php echo esc_attr($this->get_option('max_links_per_tag', 1)); ?>" 
+                                   min="1" max="10">
+                        </td>
+                    </tr>
 
-    public function sanitize_options($input) {
-        $sanitized = array();
-        
-        // Sanitizar max_links_per_tag
-        $sanitized['max_links_per_tag'] = isset($input['max_links_per_tag']) ? 
-            absint($input['max_links_per_tag']) : 1;
+                    <tr>
+                        <th scope="row"><?php esc_html_e('Open links in new window', 'auto-tag-linker'); ?></th>
+                        <td>
+                            <label>
+                                <input type="checkbox" 
+                                       name="<?php echo esc_attr($this->option_name); ?>[open_new_window]" 
+                                       value="1" 
+                                       <?php checked($this->get_option('open_new_window', false)); ?>>
+                            </label>
+                        </td>
+                    </tr>
 
-        // Sanitizar open_new_window
-        $sanitized['open_new_window'] = isset($input['open_new_window']);
+                    <tr>
+                        <th scope="row"><?php esc_html_e('Link Sources', 'auto-tag-linker'); ?></th>
+                        <td>
+                            <label>
+                                <input type="checkbox" 
+                                       name="<?php echo esc_attr($this->option_name); ?>[enable_tags]" 
+                                       value="1" 
+                                       <?php checked($this->get_option('enable_tags', true)); ?>>
+                                <?php esc_html_e('Enable tag linking', 'auto-tag-linker'); ?>
+                            </label>
+                            <br>
+                            <label>
+                                <input type="checkbox" 
+                                       name="<?php echo esc_attr($this->option_name); ?>[enable_custom_words]" 
+                                       value="1" 
+                                       <?php checked($this->get_option('enable_custom_words', true)); ?>>
+                                <?php esc_html_e('Enable custom word linking', 'auto-tag-linker'); ?>
+                            </label>
+                        </td>
+                    </tr>
 
-        // Sanitizar enable_tags
-        $sanitized['enable_tags'] = isset($input['enable_tags']);
+                    <tr>
+                        <th scope="row"><?php esc_html_e('Post Types', 'auto-tag-linker'); ?></th>
+                        <td>
+                            <?php
+                            $post_types = get_post_types(array('public' => true), 'objects');
+                            $enabled_types = $this->get_option('enabled_post_types', array('post'));
+                            foreach ($post_types as $post_type) :
+                            ?>
+                                <label style="display: block; margin-bottom: 5px;">
+                                    <input type="checkbox" 
+                                           name="<?php echo esc_attr($this->option_name); ?>[enabled_post_types][]" 
+                                           value="<?php echo esc_attr($post_type->name); ?>"
+                                           <?php checked(in_array($post_type->name, $enabled_types)); ?>>
+                                    <?php echo esc_html($post_type->label); ?>
+                                </label>
+                            <?php endforeach; ?>
+                        </td>
+                    </tr>
 
-        // Sanitizar enable_custom_words
-        $sanitized['enable_custom_words'] = isset($input['enable_custom_words']);
+                    <tr>
+                        <th scope="row">
+                            <label for="custom_words"><?php esc_html_e('Custom Words', 'auto-tag-linker'); ?></label>
+                        </th>
+                        <td>
+                            <textarea id="custom_words" 
+                                     name="<?php echo esc_attr($this->option_name); ?>[custom_words]" 
+                                     rows="10" 
+                                     class="large-text code"><?php 
+                                echo esc_textarea($this->get_option('custom_words', '')); 
+                            ?></textarea>
+                            <p class="description">
+                                <?php esc_html_e('One word per line. Format: word|URL (URL is optional)', 'auto-tag-linker'); ?>
+                            </p>
+                        </td>
+                    </tr>
 
-        // Sanitizar enabled_post_types
-        $sanitized['enabled_post_types'] = isset($input['enabled_post_types']) && is_array($input['enabled_post_types']) ? 
-            array_map('sanitize_text_field', $input['enabled_post_types']) : array('post');
+                    <tr>
+                        <th scope="row">
+                            <label for="blacklist"><?php esc_html_e('Blacklist', 'auto-tag-linker'); ?></label>
+                        </th>
+                        <td>
+                            <textarea id="blacklist" 
+                                     name="<?php echo esc_attr($this->option_name); ?>[blacklist]" 
+                                     rows="5" 
+                                     class="large-text code"><?php 
+                                echo esc_textarea($this->get_option('blacklist', '')); 
+                            ?></textarea>
+                            <p class="description">
+                                <?php esc_html_e('Words to exclude from linking. One per line.', 'auto-tag-linker'); ?>
+                            </p>
+                        </td>
+                    </tr>
 
-        // Sanitizar custom_words
-        $sanitized['custom_words'] = isset($input['custom_words']) ? 
-            sanitize_textarea_field($input['custom_words']) : '';
+                    <tr>
+                        <th scope="row">
+                            <label for="custom_css"><?php esc_html_e('Custom CSS', 'auto-tag-linker'); ?></label>
+                        </th>
+                        <td>
+                            <textarea id="custom_css" 
+                                     name="<?php echo esc_attr($this->option_name); ?>[custom_css]" 
+                                     rows="5" 
+                                     class="large-text code"><?php 
+                                echo esc_textarea($this->get_option('custom_css', '.auto-tag-link { text-decoration: none !important; color: inherit; } .auto-tag-link:hover { text-decoration: underline !important; }')); 
+                            ?></textarea>
+                        </td>
+                    </tr>
+                </table>
 
-        // Sanitizar blacklist
-        $sanitized['blacklist'] = isset($input['blacklist']) ? 
-            sanitize_textarea_field($input['blacklist']) : '';
-
-        // Sanitizar custom_css
-        $sanitized['custom_css'] = isset($input['custom_css']) ? 
-            sanitize_textarea_field($input['custom_css']) : '';
-
-        return $sanitized;
+                <?php submit_button(); ?>
+            </form>
+        </div>
+        <?php
     }
 
     public function add_meta_box() {
@@ -230,7 +409,7 @@ public function process_content($content) {
         foreach ($screens as $screen) {
             add_meta_box(
                 'atl_meta_box',
-                'Auto Tag Linker',
+                __('Auto Tag Linker', 'auto-tag-linker'),
                 array($this, 'render_meta_box'),
                 $screen,
                 'side'
@@ -239,12 +418,12 @@ public function process_content($content) {
     }
 
     public function render_meta_box($post) {
-        $value = get_post_meta($post->ID, '_disable_auto_linking', true);
         wp_nonce_field('atl_meta_box', 'atl_meta_box_nonce');
+        $value = get_post_meta($post->ID, '_disable_auto_linking', true);
         ?>
         <label>
             <input type="checkbox" name="disable_auto_linking" value="1" <?php checked($value, '1'); ?>>
-            Desactivar auto-linking para este post
+            <?php esc_html_e('Disable auto-linking for this post', 'auto-tag-linker'); ?>
         </label>
         <?php
     }
@@ -266,168 +445,36 @@ public function process_content($content) {
         $value = isset($_POST['disable_auto_linking']) ? '1' : '';
         update_post_meta($post_id, '_disable_auto_linking', $value);
     }
-
-    public function add_custom_css() {
-        $custom_css = $this->get_option('custom_css', '.auto-tag-link { text-decoration: none !important; color: inherit; } .auto-tag-link:hover { text-decoration: none !important; color: inherit; }');
-        if (!empty($custom_css)) {
-            echo "<style type='text/css'>\n" . esc_html($custom_css) . "\n</style>\n";
-        }
-    }
-
-    public function render_settings_page() {
-        if (!current_user_can('manage_options')) {
-            return;
-        }
-
-        ?>
-        <div class="wrap">
-            <h1><?php echo esc_html(get_admin_page_title()); ?></h1>
-            
-            <form action="options.php" method="post">
-                <?php settings_fields($this->options_group); ?>
-                <table class="form-table" role="presentation">
-                    <!-- Sección de Configuración General -->
-                    <tr>
-                        <th colspan="2">
-                            <h2 class="title">Configuración General</h2>
-                        </th>
-                    </tr>
-                    
-                    <tr>
-                        <th scope="row">
-                            <label for="max_links_per_tag">Maximum links per word/tag</label>
-                        </th>
-                        <td>
-                            <input type="number" id="max_links_per_tag" 
-                                   name="<?php echo esc_attr($this->option_name); ?>[max_links_per_tag]" 
-                                   value="<?php echo esc_attr($this->get_option('max_links_per_tag', 1)); ?>" 
-                                   min="1" max="10">
-                        </td>
-                    </tr>
-
-                    <tr>
-                        <th scope="row">Open links in new window</th>
-                        <td>
-                            <label>
-                                <input type="checkbox" 
-                                       name="<?php echo esc_attr($this->option_name); ?>[open_new_window]" 
-                                       value="1" 
-                                       <?php checked($this->get_option('open_new_window', false)); ?>>
-                            </label>
-                        </td>
-                    </tr>
-
-                    <!-- Post Types -->
-                    <tr>
-                        <th scope="row">Enable for Post Types</th>
-                        <td>
-                            <?php
-                            $enabled_types = $this->get_option('enabled_post_types', array('post'));
-                            $post_types = get_post_types(array('public' => true), 'objects');
-                            foreach ($post_types as $post_type) :
-                            ?>
-                                <label style="display: block; margin-bottom: 5px;">
-                                    <input type="checkbox" 
-                                           name="<?php echo esc_attr($this->option_name); ?>[enabled_post_types][]" 
-                                           value="<?php echo esc_attr($post_type->name); ?>"
-                                           <?php checked(in_array($post_type->name, $enabled_types)); ?>>
-                                    <?php echo esc_html($post_type->label); ?>
-                                </label>
-                            <?php endforeach; ?>
-                        </td>
-                    </tr>
-
-                    <!-- Sección de Fuentes de Enlaces -->
-                    <tr>
-                        <th colspan="2">
-                            <h2 class="title">Fuentes de Enlaces</h2>
-                        </th>
-                    </tr>
-
-                    <tr>
-                        <th scope="row">Habilitar Enlaces</th>
-                        <td>
-                            <label style="display: block; margin-bottom: 5px;">
-                                <input type="checkbox" 
-                                       name="<?php echo esc_attr($this->option_name); ?>[enable_tags]" 
-                                       value="1" 
-                                       <?php checked($this->get_option('enable_tags', true)); ?>>
-                                Usar etiquetas internas de WordPress
-                            </label>
-                            <label style="display: block; margin-bottom: 5px;">
-                                <input type="checkbox" 
-                                       name="<?php echo esc_attr($this->option_name); ?>[enable_custom_words]" 
-                                       value="1" 
-                                       <?php checked($this->get_option('enable_custom_words', true)); ?>>
-                                Usar lista personalizada de palabras
-                            </label>
-                        </td>
-                    </tr>
-
-                    <!-- Lista de Palabras Personalizadas -->
-                    <tr>
-                        <th scope="row">
-                            <label for="custom_words">Lista de Palabras</label>
-                        </th>
-                        <td>
-                        <textarea id="custom_words" 
-                                      name="<?php echo esc_attr($this->option_name); ?>[custom_words]" 
-                                      rows="10" 
-                                      class="large-text code"
-                                      placeholder="palabra1|https://ejemplo.com/url1&#10;palabra2|&#10;palabra3|https://ejemplo.com/url3"><?php 
-                                echo esc_textarea($this->get_option('custom_words', '')); 
-                            ?></textarea>
-                            <p class="description">
-                                Formato: una palabra por línea.<br>
-                                Para URLs personalizados: palabra|URL<br>
-                                Sin URL: la palabra se vinculará a la búsqueda interna<br>
-                                Ejemplo:<br>
-                                WordPress|https://wordpress.org<br>
-                                PHP
-                            </p>
-                        </td>
-                    </tr>
-
-                    <!-- Blacklist -->
-                    <tr>
-                        <th scope="row">
-                            <label for="blacklist">Blacklist</label>
-                        </th>
-                        <td>
-                            <textarea id="blacklist" 
-                                      name="<?php echo esc_attr($this->option_name); ?>[blacklist]" 
-                                      rows="5" 
-                                      class="large-text code"
-                                      placeholder="Una palabra por línea"><?php 
-                                echo esc_textarea($this->get_option('blacklist', '')); 
-                            ?></textarea>
-                            <p class="description">Palabras que no se convertirán en enlaces. Una por línea.</p>
-                        </td>
-                    </tr>
-
-                    <!-- Custom CSS -->
-                    <tr>
-                        <th scope="row">
-                            <label for="custom_css">Custom CSS</label>
-                        </th>
-                        <td>
-                            <textarea id="custom_css" 
-                                      name="<?php echo esc_attr($this->option_name); ?>[custom_css]" 
-                                      rows="5" 
-                                      class="large-text code"><?php 
-                                echo esc_textarea($this->get_option('custom_css', '.auto-tag-link { text-decoration: none !important; color: inherit; } .auto-tag-link:hover { text-decoration: none !important; color: inherit; }')); 
-                            ?></textarea>
-                            <p class="description">Personaliza el estilo de los enlaces automáticos.</p>
-                        </td>
-                    </tr>
-                </table>
-
-                <?php submit_button(); ?>
-            </form>
-        </div>
-        <?php
-    }
 }
 
-// Inicializar el plugin
-new AutoTagLinker();
+// Initialize the plugin
+function initialize_auto_tag_linker() {
+    new AutoTagLinker();
+}
+add_action('plugins_loaded', 'initialize_auto_tag_linker');
+
+// Register activation hook
+register_activation_hook(__FILE__, 'atl_activate');
+function atl_activate() {
+    // Add default options on activation
+    if (false === get_option('auto_tag_linker_settings')) {
+        $defaults = array(
+            'max_links_per_tag' => 1,
+            'open_new_window' => false,
+            'enable_tags' => true,
+            'enable_custom_words' => true,
+            'enabled_post_types' => array('post'),
+            'custom_words' => '',
+            'blacklist' => '',
+            'custom_css' => '.auto-tag-link { text-decoration: none !important; color: inherit; } .auto-tag-link:hover { text-decoration: underline !important; }'
+        );
+        add_option('auto_tag_linker_settings', $defaults);
+    }
+    flush_rewrite_rules();
+}
+
+// Register deactivation hook
+register_deactivation_hook(__FILE__, 'atl_deactivate');
+function atl_deactivate() {
+    flush_rewrite_rules();
+}
