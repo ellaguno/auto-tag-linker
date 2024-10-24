@@ -1,11 +1,11 @@
 <?php
 /*
 Plugin Name: Auto Tag Linker
-Plugin URI: https://wordpress.org/plugins/auto-tag-linker/
+Plugin URI: https://sesolibre.com
 Description: Automatically links words in posts to their corresponding tag archives
 Version: 1.43
 Author: Eduardo Llaguno
-Author URI: https://yourwebsite.com
+Author URI: https://sesolibre.com
 License: GPL v2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 Text Domain: auto-tag-linker
@@ -259,14 +259,26 @@ class AutoTagLinker {
     public function add_custom_css() {
         $custom_css = $this->get_option('custom_css', '');
         if (!empty($custom_css)) {
-            echo "\n<!-- Auto Tag Linker Custom CSS -->\n";
-            echo "<style type='text/css'>\n" . wp_strip_all_tags($custom_css) . "\n</style>\n";
+            // Default styles if none set
+            if (trim($custom_css) === '') {
+                $custom_css = '.auto-tag-link { text-decoration: none !important; color: inherit; } 
+                              .auto-tag-link:hover { text-decoration: underline !important; }';
+            }
+            
+            // Primero limpiamos el CSS y luego lo escapamos
+            $clean_css = wp_strip_all_tags($custom_css);
+            ?>
+            <!-- Auto Tag Linker Custom CSS -->
+            <style type="text/css">
+                <?php echo esc_html($clean_css); ?>
+            </style>
+            <?php
         }
     }
 
-public function render_settings_page() {
+    public function render_settings_page() {
         if (!current_user_can('manage_options')) {
-            wp_die(__('You do not have sufficient permissions to access this page.'));
+            wp_die(esc_html__('You do not have sufficient permissions to access this page.', 'auto-tag-linker'));
         }
         ?>
         <div class="wrap">
@@ -305,6 +317,7 @@ public function render_settings_page() {
                                        name="<?php echo esc_attr($this->option_name); ?>[open_new_window]" 
                                        value="1" 
                                        <?php checked($this->get_option('open_new_window', false)); ?>>
+                                <?php esc_html_e('Open in new window', 'auto-tag-linker'); ?>
                             </label>
                         </td>
                     </tr>
@@ -346,6 +359,9 @@ public function render_settings_page() {
                                     <?php echo esc_html($post_type->label); ?>
                                 </label>
                             <?php endforeach; ?>
+                            <p class="description">
+                                <?php esc_html_e('Select which post types should have auto-linking enabled.', 'auto-tag-linker'); ?>
+                            </p>
                         </td>
                     </tr>
 
@@ -361,7 +377,13 @@ public function render_settings_page() {
                                 echo esc_textarea($this->get_option('custom_words', '')); 
                             ?></textarea>
                             <p class="description">
-                                <?php esc_html_e('One word per line. Format: word|URL (URL is optional)', 'auto-tag-linker'); ?>
+                                <?php 
+                                esc_html_e('One word per line. Format: word|URL (URL is optional)', 'auto-tag-linker');
+                                echo '<br>';
+                                esc_html_e('Example:', 'auto-tag-linker');
+                                echo '<br>';
+                                echo 'WordPress|https://wordpress.org<br>PHP';
+                                ?>
                             </p>
                         </td>
                     </tr>
@@ -394,13 +416,27 @@ public function render_settings_page() {
                                      class="large-text code"><?php 
                                 echo esc_textarea($this->get_option('custom_css', '.auto-tag-link { text-decoration: none !important; color: inherit; } .auto-tag-link:hover { text-decoration: underline !important; }')); 
                             ?></textarea>
+                            <p class="description">
+                                <?php esc_html_e('Custom CSS for styling the auto-generated links.', 'auto-tag-linker'); ?>
+                            </p>
                         </td>
                     </tr>
                 </table>
 
-                <?php submit_button(); ?>
+                <?php submit_button(esc_html__('Save Changes', 'auto-tag-linker')); ?>
             </form>
         </div>
+        <?php
+    }
+
+    public function render_meta_box($post) {
+        wp_nonce_field('atl_meta_box', 'atl_meta_box_nonce');
+        $value = get_post_meta($post->ID, '_disable_auto_linking', true);
+        ?>
+        <label>
+            <input type="checkbox" name="disable_auto_linking" value="1" <?php checked($value, '1'); ?>>
+            <?php esc_html_e('Disable auto-linking for this post', 'auto-tag-linker'); ?>
+        </label>
         <?php
     }
 
@@ -417,33 +453,36 @@ public function render_settings_page() {
         }
     }
 
-    public function render_meta_box($post) {
-        wp_nonce_field('atl_meta_box', 'atl_meta_box_nonce');
-        $value = get_post_meta($post->ID, '_disable_auto_linking', true);
-        ?>
-        <label>
-            <input type="checkbox" name="disable_auto_linking" value="1" <?php checked($value, '1'); ?>>
-            <?php esc_html_e('Disable auto-linking for this post', 'auto-tag-linker'); ?>
-        </label>
-        <?php
-    }
 
     public function save_meta_box_data($post_id) {
-        if (!isset($_POST['atl_meta_box_nonce']) || 
-            !wp_verify_nonce($_POST['atl_meta_box_nonce'], 'atl_meta_box')) {
+        // Verify nonce is set
+        if (!isset($_POST['atl_meta_box_nonce'])) {
             return;
         }
 
+        // Clean and validate nonce
+        $nonce = sanitize_text_field(wp_unslash($_POST['atl_meta_box_nonce']));
+        
+        // Verify nonce
+        if (!wp_verify_nonce($nonce, 'atl_meta_box')) {
+            return;
+        }
+
+        // Check if autosave
         if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
             return;
         }
 
+        // Check user permissions
         if (!current_user_can('edit_post', $post_id)) {
             return;
         }
 
-        $value = isset($_POST['disable_auto_linking']) ? '1' : '';
-        update_post_meta($post_id, '_disable_auto_linking', $value);
+        // Sanitize and save the meta value
+        $disable_auto_linking = isset($_POST['disable_auto_linking']) ? 
+            sanitize_text_field(wp_unslash($_POST['disable_auto_linking'])) : '';
+        
+        update_post_meta($post_id, '_disable_auto_linking', $disable_auto_linking);
     }
 }
 
